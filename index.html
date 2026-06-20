@@ -26,7 +26,7 @@
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
-            max-width: 450px;
+            max-width: 480px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.5);
         }
 
@@ -84,17 +84,34 @@
             font-weight: 700;
             text-transform: uppercase;
             color: #00bcff;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
             border-bottom: 1px solid rgba(255,255,255,0.1);
             padding-bottom: 4px;
         }
 
-        .selected-target {
-            font-size: 11px;
-            color: #aaa;
-            margin-bottom: 10px;
-            font-style: italic;
-            word-break: break-all;
+        .target-selector-row {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 15px;
+        }
+
+        .selector-btn {
+            flex: 1;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #8a8a93;
+            padding: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            cursor: pointer;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        .selector-btn.selected {
+            background: #00bcff;
+            border-color: #00d8ff;
+            color: #fff;
         }
 
         .control-group {
@@ -174,8 +191,11 @@
 </div>
 
 <div id="transform-pad">
-    <div class="pad-title">Anatomical Repositioner</div>
-    <div id="pad-target-name" class="selected-target">Select a box in Edit Mode...</div>
+    <div class="pad-title">Global Group Adjuster</div>
+    <div class="target-selector-row">
+        <button id="target-boxes-btn" class="selector-btn selected">Bounding Boxes</button>
+        <button id="target-tracer-btn" class="selector-btn">Tracer Engine JSON</button>
+    </div>
     
     <div class="control-group">
         <label>Anterior / Posterior (Z-Axis)</label>
@@ -202,7 +222,7 @@
     </div>
 
     <div class="control-group">
-        <label>Incremental Scale Adjustments</label>
+        <label>Group Scale Modifiers</label>
         <div class="btn-row">
             <button class="pad-btn" id="scale-plus">Scale Up (+)</button>
             <button class="pad-btn" id="scale-minus">Scale Down (-)</button>
@@ -320,7 +340,7 @@ const PRESET_REGIONS = [
   { name: "Left foot - Lateral Cuboid", pos: [0.16293, 0.10383, -0.10200], rot: [0.05801, -0.03822, -0.03054], scale: [0.10000, 0.13606, 0.10000] },
   { name: "Left foot - Plantar Cuboid", pos: [0.10264, 0.05256, -0.09709], rot: [0.13568, 0.08279, -0.16764], scale: [0.08219, 0.10000, 0.11559] },
   { name: "Left foot - Medial Navicular", pos: [-0.11272, 0.18569, -0.10836], rot: [0.26887, 0.01792, 0.02201], scale: [0.10000, 0.15506, 0.06285] },
-  { name: "Left foot - Plantar Navicular", pos: [-0.04939, 0.05493, -0.13352], rot: [0.12633, 0.02134, -0.11799], scale: [0.20499, 0.08363, 0.06164] },
+  { name: "Left foot - Plantar Navicular", pos: [-0.04939, 0.05493, -0.13352], rot: [0.12633, -0.02134, -0.11799], scale: [0.20499, 0.08363, 0.06164] },
   { name: "Left foot - Medial Heel", pos: [-0.14710, 0.08781, -0.21582], rot: [0.19655, -0.09978, 0.01903], scale: [0.10000, 0.10000, 0.10000] },
   { name: "Left foot - Plantar-Medial Heel", pos: [-0.10030, 0.01331, -0.22210], rot: [0.14234, 0.01077, -0.00189], scale: [0.10000, 0.10000, 0.10000] },
   { name: "Left foot - Plantar tubercle of the calcaneus", pos: [-0.01210, 0.00936, -0.34873], rot: [0.00000, 0.00000, 0.00000], scale: [0.10823, 0.10000, 0.10870] },
@@ -363,16 +383,34 @@ let mode = "rotate";
 let markerLogs = [];
 let jsonDatabase = null;
 
-let selectedBoxMesh = null; // Target reference for runtime editing adjustments
+// Group Edit Selection States
+let editTarget = "boxes"; // Target choice: "boxes" or "tracer"
+
+// Runtime Global Offset Trackers (stored in raw authoring space values)
+let boxesGlobalOffset = new THREE.Vector3(0, 0, 0);
+let boxesGlobalScale = 1.0;
+
+let tracerGlobalOffset = new THREE.Vector3(0, 0, 0);
+let tracerGlobalScale = 1.0;
 
 let modelScale = 1;
 let modelOffset = new THREE.Vector3();
-function rawToNorm(arr) {
-    return new THREE.Vector3(
-        (arr[0] + modelOffset.x) * modelScale,
-        (arr[1] + modelOffset.y) * modelScale,
-        (arr[2] + modelOffset.z) * modelScale
-    );
+
+// Dynamic transform engine incorporating global offsets dynamically at runtime
+function rawToNorm(arr, type = "boxes") {
+    if (type === "boxes") {
+        return new THREE.Vector3(
+            ((arr[0] * boxesGlobalScale) + boxesGlobalOffset.x + modelOffset.x) * modelScale,
+            ((arr[1] * boxesGlobalScale) + boxesGlobalOffset.y + modelOffset.y) * modelScale,
+            ((arr[2] * boxesGlobalScale) + boxesGlobalOffset.z + modelOffset.z) * modelScale
+        );
+    } else {
+        return new THREE.Vector3(
+            ((arr[0] * tracerGlobalScale) + tracerGlobalOffset.x + modelOffset.x) * modelScale,
+            ((arr[1] * tracerGlobalScale) + tracerGlobalOffset.y + modelOffset.y) * modelScale,
+            ((arr[2] * tracerGlobalScale) + tracerGlobalOffset.z + modelOffset.z) * modelScale
+        );
+    }
 }
 
 init();
@@ -417,14 +455,14 @@ async function init() {
         console.error("Local JSON database file could not be loaded:", e);
         jsonStatus.style.color = "#ff5555";
         jsonStatus.textContent = `✗ anatomy_tracer.json failed to load`;
-        debugBox.innerHTML = `<span style="color:#ff5555">⚠ Could not load anatomy_tracer.json (${e.message}). Check file directory setup.</span>`;
+        debugBox.innerHTML = `<span style="color:#ff5555">⚠ Could not load anatomy_tracer.json (${e.message}). Check directory index tracking.</span>`;
     }
 
     setupWebTestingControls();
     setupTransformationPadHandlers();
 
     const handleInput = (e) => {
-        if (!isLoaded || mode === "rotate") return;
+        if (!isLoaded || mode !== "mark") return;
         if (e.type === 'touchstart') e.preventDefault();
 
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -434,11 +472,7 @@ async function init() {
         mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
         mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
         
-        if (mode === "mark") {
-            performLayeredRaycast();
-        } else if (mode === "edit") {
-            performEditorSelectionRaycast();
-        }
+        performLayeredRaycast();
     };
 
     renderer.domElement.addEventListener("mousedown", (e) => { if(!('ontouchstart' in window)) handleInput(e); });
@@ -459,6 +493,9 @@ function setupWebTestingControls() {
     const debugBox = document.getElementById("diagnostic-results");
     const transformPad = document.getElementById("transform-pad");
 
+    const boxesBtn = document.getElementById("target-boxes-btn");
+    const tracerBtn = document.getElementById("target-tracer-btn");
+
     btnRotate.addEventListener("click", () => {
         mode = "rotate";
         setActiveModeButton(btnRotate);
@@ -478,9 +515,21 @@ function setupWebTestingControls() {
     btnEdit.addEventListener("click", () => {
         mode = "edit";
         setActiveModeButton(btnEdit);
-        controls.enabled = false;
+        controls.enabled = true; // Keep viewport orbit navigation functional while repositioning
         transformPad.style.display = "block";
-        debugBox.innerHTML = "Edit Mode active. Click directly on any blue bounding box structure to load it into the repositioner pad.";
+        debugBox.innerHTML = "Global Group Adjustment active. Use the buttons on the right panel to move the entire tracking set uniformly.";
+    });
+
+    boxesBtn.addEventListener("click", () => {
+        editTarget = "boxes";
+        boxesBtn.className = "selector-btn selected";
+        tracerBtn.className = "selector-btn";
+    });
+
+    tracerBtn.addEventListener("click", () => {
+        editTarget = "tracer";
+        tracerBtn.className = "selector-btn selected";
+        boxesBtn.className = "selector-btn";
     });
 
     toggleBoxes.addEventListener("click", () => {
@@ -505,69 +554,120 @@ function setupWebTestingControls() {
     }
 }
 
-function performEditorSelectionRaycast() {
-    raycaster.setFromCamera(mouse, camera);
-    // Raycast directly against wireframe boxes
-    const hits = raycaster.intersectObjects(regionGroup.children);
-    const targetLabel = document.getElementById("pad-target-name");
+function setupTransformationPadHandlers() {
+    const stepSize = 0.004; 
+    const scaleStep = 0.02;  
 
-    if (hits.length > 0) {
-        // Reset old highlight
-        if (selectedBoxMesh) selectedBoxMesh.material.color.setHex(0x00bcff);
-        
-        selectedBoxMesh = hits[0].object;
-        selectedBoxMesh.material.color.setHex(0xffaa00); // Highlight golden orange
-        targetLabel.textContent = selectedBoxMesh.userData.name;
-    }
+    const adjustGroup = (axis, sign) => {
+        if (editTarget === "boxes") {
+            if (axis === 'x') boxesGlobalOffset.x += (sign * stepSize);
+            if (axis === 'y') boxesGlobalOffset.y += (sign * stepSize);
+            if (axis === 'z') boxesGlobalOffset.z += (sign * stepSize);
+            rebuildBoxes();
+        } else {
+            if (axis === 'x') tracerGlobalOffset.x += (sign * stepSize);
+            if (axis === 'y') tracerGlobalOffset.y += (sign * stepSize);
+            if (axis === 'z') tracerGlobalOffset.z += (sign * stepSize);
+            drawJsonTracers();
+        }
+    };
+
+    const adjustGroupScale = (sign) => {
+        const factor = 1 + (sign * scaleStep);
+        if (editTarget === "boxes") {
+            boxesGlobalScale *= factor;
+            rebuildBoxes();
+        } else {
+            tracerGlobalScale *= factor;
+            drawJsonTracers();
+        }
+    };
+
+    document.getElementById("trans-z-plus").addEventListener("click", () => adjustGroup('z', 1));   
+    document.getElementById("trans-z-minus").addEventListener("click", () => adjustGroup('z', -1)); 
+    document.getElementById("trans-y-plus").addEventListener("click", () => adjustGroup('y', 1));   
+    document.getElementById("trans-y-minus").addEventListener("click", () => adjustGroup('y', -1)); 
+    document.getElementById("trans-x-plus").addEventListener("click", () => adjustGroup('x', 1));   
+    document.getElementById("trans-x-minus").addEventListener("click", () => adjustGroup('x', -1)); 
+    
+    document.getElementById("scale-plus").addEventListener("click", () => adjustGroupScale(1));
+    document.getElementById("scale-minus").addEventListener("click", () => adjustGroupScale(-1));
 }
 
-function setupTransformationPadHandlers() {
-    const stepSize = 0.002; // Raw author space displacement unit increment mapping
-    const scaleStep = 0.05;  // Scale percentage step multiplier
+function rebuildBoxes() {
+    regionGroup.clear();
+    if (currentFoot !== "left") return;
 
-    const adjust = (axis, sign) => {
-        if (!selectedBoxMesh) return;
-        const index = selectedBoxMesh.userData.index;
+    PRESET_REGIONS.forEach((data, index) => {
+        const norm = rawToNorm(data.pos, "boxes");
+        const mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(1, 1, 1),
+            new THREE.MeshBasicMaterial({ 
+                color: 0x00bcff, 
+                wireframe: true, 
+                transparent: true, 
+                opacity: 0.4 
+            })
+        );
+        mesh.position.copy(norm);
+        mesh.rotation.set(...data.rot);
         
-        // Update live viewport scene mesh instance position
-        if (axis === 'x') selectedBoxMesh.position.x += (sign * stepSize * modelScale);
-        if (axis === 'y') selectedBoxMesh.position.y += (sign * stepSize * modelScale);
-        if (axis === 'z') selectedBoxMesh.position.z += (sign * stepSize * modelScale);
-        
-        // Save modifications to array in native raw coordinate space format
-        if (axis === 'x') PRESET_REGIONS[index].pos[0] += (sign * stepSize);
-        if (axis === 'y') PRESET_REGIONS[index].pos[1] += (sign * stepSize);
-        if (axis === 'z') PRESET_REGIONS[index].pos[2] += (sign * stepSize);
-    };
-
-    const adjustScale = (sign) => {
-        if (!selectedBoxMesh) return;
-        const index = selectedBoxMesh.userData.index;
-        const factor = 1 + (sign * scaleStep);
-        
-        selectedBoxMesh.scale.multiplyScalar(factor);
-        PRESET_REGIONS[index].scale = PRESET_REGIONS[index].scale.map(v => v * factor);
-    };
-
-    // Bind anatomical translation inputs mapping directly to Three space coordinates
-    document.getElementById("trans-z-plus").addEventListener("click", () => adjust('z', 1));   // Anterior
-    document.getElementById("trans-z-minus").addEventListener("click", () => adjust('z', -1)); // Posterior
-    document.getElementById("trans-y-plus").addEventListener("click", () => adjust('y', 1));   // Superior
-    document.getElementById("trans-y-minus").addEventListener("click", () => adjust('y', -1)); // Inferior
-    document.getElementById("trans-x-plus").addEventListener("click", () => adjust('x', 1));   // Lateral (Left Foot)
-    document.getElementById("trans-x-minus").addEventListener("click", () => adjust('x', -1)); // Medial (Left Foot)
-    
-    document.getElementById("scale-plus").addEventListener("click", () => adjustScale(1));
-    document.getElementById("scale-minus").addEventListener("click", () => adjustScale(-1));
+        // Dynamic matching configuration adjustments
+        mesh.scale.set(
+            data.scale[0] * modelScale * boxesGlobalScale, 
+            data.scale[1] * modelScale * boxesGlobalScale, 
+            data.scale[2] * modelScale * boxesGlobalScale
+        );
+        mesh.userData = { name: data.name, index: index };
+        regionGroup.add(mesh);
+    });
+    regionGroup.updateMatrixWorld(true);
 }
 
 function downloadConfigurationData() {
-    // Filter down to customized structural arrays
-    const leftFootData = PRESET_REGIONS.filter(r => r.name.startsWith("Left foot"));
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(leftFootData, null, 2));
+    // Generate modified arrays containing translation settings
+    const modifiedRegions = PRESET_REGIONS.filter(r => r.name.startsWith("Left foot")).map(r => {
+        return {
+            name: r.name,
+            pos: [
+                (r.pos[0] * boxesGlobalScale) + boxesGlobalOffset.x,
+                (r.pos[1] * boxesGlobalScale) + boxesGlobalOffset.y,
+                (r.pos[2] * boxesGlobalScale) + boxesGlobalOffset.z
+            ],
+            rot: [...r.rot],
+            scale: r.scale.map(s => s * boxesGlobalScale)
+        };
+    });
+
+    let outputPayload = {
+        meta: {
+            boxesGlobalOffset,
+            boxesGlobalScale,
+            tracerGlobalOffset,
+            tracerGlobalScale
+        },
+        preset_regions_left: modifiedRegions
+    };
+
+    if (jsonDatabase && jsonDatabase.anatomical_database) {
+        outputPayload.modified_anatomy_tracer = jsonDatabase.anatomical_database.map(item => {
+            return {
+                label: item.label,
+                type: item.type,
+                coordinates: item.coordinates.map(coord => [
+                    (coord[0] * tracerGlobalScale) + tracerGlobalOffset.x,
+                    (coord[1] * tracerGlobalScale) + tracerGlobalOffset.y,
+                    (coord[2] * tracerGlobalScale) + tracerGlobalOffset.z
+                ]),
+                clinical_profile: item.clinical_profile
+            };
+        });
+    }
+
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(outputPayload, null, 2));
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", "updated_left_foot_regions.json");
+    downloadAnchor.setAttribute("download", "foot_alignment_configuration.json");
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
@@ -642,8 +742,8 @@ function performLayeredRaycast() {
                 let calculatedDepthFromSurface = 0;
 
                 for (let i = 0; i < item.coordinates.length - 1; i++) {
-                    const nodeA = rawToNorm(item.coordinates[i]);
-                    const nodeB = rawToNorm(item.coordinates[i+1]);
+                    const nodeA = rawToNorm(item.coordinates[i], "tracer");
+                    const nodeB = rawToNorm(item.coordinates[i+1], "tracer");
                     
                     const subdivisions = 10;
                     for (let s = 0; s <= subdivisions; s++) {
@@ -733,7 +833,7 @@ function drawJsonTracers() {
     jsonDatabase.anatomical_database.forEach(item => {
         const points = [];
         item.coordinates.forEach(coord => {
-            points.push(rawToNorm(coord));
+            points.push(rawToNorm(coord, "tracer"));
         });
 
         if (points.length > 1) {
@@ -758,8 +858,6 @@ function loadFoot() {
     markerGroup.clear();
     regionGroup.clear();
     jsonVisualGroup.clear();
-    selectedBoxMesh = null;
-    document.getElementById("pad-target-name").textContent = "Select a box in Edit Mode...";
     markerLogs = [];
 
     new GLTFLoader().load(urls[currentFoot], (gltf) => {
@@ -774,27 +872,7 @@ function loadFoot() {
         model.scale.setScalar(modelScale);
         footGroup.add(model);
 
-        if (currentFoot === "left") {
-            PRESET_REGIONS.forEach((data, index) => {
-                const norm = rawToNorm(data.pos);
-                const mesh = new THREE.Mesh(
-                    new THREE.BoxGeometry(1, 1, 1),
-                    new THREE.MeshBasicMaterial({ 
-                        color: 0x00bcff, 
-                        wireframe: true, 
-                        transparent: true, 
-                        opacity: 0.4 
-                    })
-                );
-                mesh.position.copy(norm);
-                mesh.rotation.set(...data.rot);
-                mesh.scale.set(data.scale[0] * modelScale, data.scale[1] * modelScale, data.scale[2] * modelScale);
-                mesh.userData = { name: data.name, index: index };
-                regionGroup.add(mesh);
-            });
-            regionGroup.updateMatrixWorld(true);
-        }
-
+        rebuildBoxes();
         drawJsonTracers();
 
         camera.position.set(0, 1.2, 2.5); controls.target.set(0, 0.4, 0); isLoaded = true;
